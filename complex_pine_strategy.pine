@@ -1,0 +1,108 @@
+//@version=5
+strategy("Complex Multi-Indicator Strategy", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=1)
+
+// ===== Inputs =====
+emaFastPeriod  = input.int(10,  "EMA Rápida")
+emaSlowPeriod  = input.int(30,  "EMA Lenta")
+emaTrendPeriod = input.int(200, "EMA de Tendência")
+rsiPeriod      = input.int(14,  "RSI")
+stochPeriod    = input.int(14,  "Stoch RSI")
+macdFast       = input.int(12,  "MACD Rápido")
+macdSlow       = input.int(26,  "MACD Lento")
+macdSignal     = input.int(9,   "MACD Sinal")
+atrPeriod      = input.int(14,  "ATR")
+atrMultSL      = input.float(1.5, "Multiplicador ATR SL")
+atrMultTP      = input.float(3.0, "Multiplicador ATR TP")
+showVWAP       = input.bool(true, "Mostrar VWAP")
+htf            = input.timeframe("D", "Timeframe de tendência")
+allowedDays    = input.string("Mon,Tue,Wed,Thu,Fri", "Dias permitidos", tooltip="Separar por vírgula")
+volMultiplier  = input.float(1.5, "Multiplicador de Volume para Breakout")
+
+// ===== Funções utilitárias =====
+string[] dayNames = array.from("Mon","Tue","Wed","Thu","Fri","Sat","Sun")
+calcDayAllowed() =>
+    dayName = str.substring(tostring(dayofweek(time)), 0, 3)
+    str.contains(allowedDays, dayName)
+
+f_htf(src) => request.security(syminfo.tickerid, htf, src)
+
+// ===== Indicadores =====
+emaFast  = ta.ema(close, emaFastPeriod)
+emaSlow  = ta.ema(close, emaSlowPeriod)
+emaTrend = ta.ema(close, emaTrendPeriod)
+
+rsiValue   = ta.rsi(close, rsiPeriod)
+stochValue = ta.stoch(close, high, low, stochPeriod)
+
+[macdLine, signalLine, histLine] = ta.macd(close, macdFast, macdSlow, macdSignal)
+
+atrVal = ta.atr(atrPeriod)
+vwapVal = ta.vwap(close)
+
+htfTrend = f_htf(close) > f_htf(emaTrend)
+
+obvValue = ta.obv(close, volume)
+
+// ===== Breakout com Volume =====
+volAvg = ta.sma(volume, atrPeriod)
+breakoutCond = close > ta.highest(high, 20) and volume > volMultiplier * volAvg
+
+// ===== Suporte/Resistência simples =====
+var float support = na
+var float resistance = na
+if ta.change(time("D"))
+    support := low
+    resistance := high
+else
+    support := math.min(support, low)
+    resistance := math.max(resistance, high)
+
+// ===== Condições de Entrada =====
+longCond  = ta.crossover(emaFast, emaSlow) and close > emaTrend and htfTrend and rsiValue > 50 and histLine > 0 and breakoutCond and calcDayAllowed()
+shortCond = ta.crossunder(emaFast, emaSlow) and close < emaTrend and not htfTrend and rsiValue < 50 and histLine < 0 and breakoutCond and calcDayAllowed()
+
+// ===== Gestão de Risco =====
+stopLevel  = strategy.position_size > 0 ? close - atrMultSL * atrVal : close + atrMultSL * atrVal
+takeLevel  = strategy.position_size > 0 ? close + atrMultTP * atrVal : close - atrMultTP * atrVal
+
+if longCond
+    strategy.entry("Long", strategy.long)
+    strategy.exit("TP/SL", from_entry="Long", stop=stopLevel, limit=takeLevel)
+if shortCond
+    strategy.entry("Short", strategy.short)
+    strategy.exit("TP/SL", from_entry="Short", stop=stopLevel, limit=takeLevel)
+
+// ===== Controle de Exposição =====
+if strategy.position_size > 0 and close < emaFast
+    strategy.close("Long")
+if strategy.position_size < 0 and close > emaFast
+    strategy.close("Short")
+
+// ===== Plotagens =====
+plot(emaFast,  color=color.orange, title="EMA Rápida")
+plot(emaSlow,  color=color.blue,   title="EMA Lenta")
+plot(emaTrend, color=color.gray,   title="EMA Tendência")
+plot(rsiValue, title="RSI", color=color.purple, linewidth=1, display=display.none)
+plot(macdLine, title="MACD", color=color.teal, display=display.none)
+plot(signalLine, title="Sinal MACD", color=color.fuchsia, display=display.none)
+plot(histLine, style=plot.style_histogram, color=histLine >= 0 ? color.green : color.red, title="Hist MACD", display=display.none)
+plot(obvValue, color=color.green, title="OBV", display=display.none)
+plot(support, style=plot.style_linebr, color=color.green, title="Suporte")
+plot(resistance, style=plot.style_linebr, color=color.red, title="Resistência")
+if showVWAP
+    plot(vwapVal, color=color.gold, title="VWAP")
+
+// ===== Alertas =====
+alertcondition(longCond,  title="Alerta de Compra", message="Condição de compra atendida")
+alertcondition(shortCond, title="Alerta de Venda",  message="Condição de venda atendida")
+
+// ===== Estatísticas de Trades =====
+var float[] tradeProfits = array.new_float()
+var float   cumProfit   = 0.0
+if strategy.closedtrades > 0
+    profit = strategy.netprofit(strategy.closedtrades - 1)
+    array.push(tradeProfits, profit)
+    cumProfit += profit
+
+plot(cumProfit, title="Lucro Acumulado", color=color.aqua, display=display.none)
+
